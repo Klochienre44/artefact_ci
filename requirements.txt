@@ -1,0 +1,16 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+pandas==2.2.3
+openpyxl==3.1.5
+xlrd==2.0.1
+minio==7.2.12
+opentelemetry-api==1.28.0
+opentelemetry-sdk==1.28.0
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-logging
+opentelemetry-exporter-otlp-proto-grpc==1.28.0
+pytest==8.3.4
+pytest-asyncio==0.24.0
+httpx==0.27.2

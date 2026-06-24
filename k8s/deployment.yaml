@@ -1,0 +1,143 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ARTECI — Manifests Kubernetes
+# Fichier : deployment.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arteci-api
+  namespace: arteci-production
+  labels:
+    app: arteci-api
+    version: "1.0.0"
+    component: api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: arteci-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: arteci-api
+        version: "1.0.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: arteci-sa
+
+      # Préférence de répartition sur des nœuds différents
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: [arteci-api]
+                topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: arteci-api
+          image: ghcr.io/VOTRE_ORG/arteci-api:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+
+          env:
+            - name: MINIO_ENDPOINT
+              value: "minio-svc:9000"
+            - name: MINIO_SECURE
+              value: "false"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector-svc:4317"
+            - name: OTEL_SERVICE_NAME
+              value: "arteci-api"
+            - name: WORKERS
+              value: "4"
+            # Secrets injectés depuis un Secret Kubernetes
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: arteci-secrets
+                  key: minio-access-key
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: arteci-secrets
+                  key: minio-secret-key
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            failureThreshold: 3
+
+          lifecycle:
+            preStop:
+              exec:
+                # Attendre 5 secondes avant l'arrêt pour que le load balancer
+                # redirige les requêtes en cours
+                command: ["/bin/sh", "-c", "sleep 5"]
+
+      terminationGracePeriodSeconds: 30
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Horizontal Pod Autoscaler
+# Scale automatiquement entre 3 et 10 pods selon la charge CPU
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: arteci-api-hpa
+  namespace: arteci-production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: arteci-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

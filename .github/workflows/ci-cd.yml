@@ -1,0 +1,200 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ARTECI — Pipeline CI/CD GitHub Actions
+#
+# Étapes :
+#   1. lint        : Vérification du style (flake8 + black)
+#   2. test        : Tests unitaires et d'intégration (pytest + couverture)
+#   3. build       : Construction de l'image Docker
+#   4. push        : Publication sur GitHub Container Registry (GHCR)
+#   5. deploy      : Déploiement sur le cluster Kubernetes (staging → production)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: ARTECI CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/arteci-api
+
+jobs:
+
+  # ── 1. LINT ────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (flake8 + black)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Installer les dépendances de linting
+        run: pip install flake8 black
+
+      - name: Vérification du style avec black
+        run: black --check --diff app/ tests/
+
+      - name: Vérification PEP8 avec flake8
+        run: |
+          flake8 app/ tests/ \
+            --max-line-length=120 \
+            --ignore=E501,W503 \
+            --exclude=__pycache__
+
+  # ── 2. TESTS ───────────────────────────────────────────────────────────────
+  test:
+    name: Tests (pytest + coverage)
+    runs-on: ubuntu-22.04
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Installer les dépendances
+        run: pip install -r requirements.txt pytest-cov
+
+      - name: Lancer les tests avec couverture
+        run: |
+          pytest tests/ \
+            -v \
+            --tb=short \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=80
+
+      - name: Publier le rapport de couverture
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  # ── 3. BUILD + PUSH IMAGE DOCKER ───────────────────────────────────────────
+  build:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-22.04
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+      image_digest: ${{ steps.push.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login au GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extraction des métadonnées Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Configuration de Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build et Push de l'image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: final
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+  # ── 4. DÉPLOIEMENT STAGING ─────────────────────────────────────────────────
+  deploy-staging:
+    name: Déploiement Staging
+    runs-on: ubuntu-22.04
+    needs: build
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment:
+      name: staging
+      url: https://arteci-staging.esatic.ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configuration de kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Déploiement sur Kubernetes (staging)
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_STAGING }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          echo "$KUBECONFIG_DATA" | base64 -d > /tmp/kubeconfig
+          export KUBECONFIG=/tmp/kubeconfig
+          kubectl set image deployment/arteci-api \
+            arteci-api=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$(echo $GITHUB_SHA | cut -c1-7) \
+            -n arteci-staging
+          kubectl rollout status deployment/arteci-api -n arteci-staging --timeout=120s
+
+  # ── 5. DÉPLOIEMENT PRODUCTION ──────────────────────────────────────────────
+  deploy-production:
+    name: Déploiement Production
+    runs-on: ubuntu-22.04
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: production
+      url: https://arteci.esatic.ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configuration de kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Déploiement sur Kubernetes (production)
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_PRODUCTION }}
+          IMAGE_TAG: ${{ github.ref_name }}
+        run: |
+          echo "$KUBECONFIG_DATA" | base64 -d > /tmp/kubeconfig
+          export KUBECONFIG=/tmp/kubeconfig
+          kubectl set image deployment/arteci-api \
+            arteci-api=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+            -n arteci-production
+          kubectl rollout status deployment/arteci-api -n arteci-production --timeout=180s
+
+      - name: Notification de déploiement réussi
+        if: success()
+        run: |
+          echo "✅ ARTECI v${{ github.ref_name }} déployé en production avec succès !"

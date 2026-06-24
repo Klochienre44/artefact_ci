@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ARTECI — Service Kubernetes
+# Expose l'API en interne au cluster (ClusterIP)
+# Un Ingress (ci-dessous) gère l'accès externe
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: arteci-api-svc
+  namespace: arteci-production
+  labels:
+    app: arteci-api
+spec:
+  selector:
+    app: arteci-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# ARTECI — Ingress (nginx)
+# Routage externe HTTPS → arteci-api-svc:80
+# Certificat TLS géré par cert-manager (Let's Encrypt)
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: arteci-api-ingress
+  namespace: arteci-production
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "500m"     # Fichiers jusqu'à 500 MB
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"   # 5 min pour les gros traitements
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+spec:
+  tls:
+    - hosts:
+        - arteci.esatic.ci
+      secretName: arteci-tls-secret
+  rules:
+    - host: arteci.esatic.ci
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: arteci-api-svc
+                port:
+                  number: 80

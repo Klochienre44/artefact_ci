@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenTelemetry Collector — Configuration ARTECI
+# Reçoit les traces depuis l'API et les exporte vers la console (dev)
+# En production, remplacer l'exporter "logging" par "otlp" vers SigNoz/Jaeger
+# ─────────────────────────────────────────────────────────────────────────────
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+  resource:
+    attributes:
+      - action: insert
+        key: deployment.environment
+        value: "docker-compose"
+
+exporters:
+  # Export vers la console (développement)
+  logging:
+    loglevel: info
+    sampling_initial: 5
+    sampling_thereafter: 20
+
+  # Export OTLP vers SigNoz (décommenter en production)
+  # otlp:
+  #   endpoint: "signoz-otel-collector:4317"
+  #   tls:
+  #     insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [logging]
+
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [logging]
+
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [logging]
