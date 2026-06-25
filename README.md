@@ -1,7 +1,7 @@
 # ARTECI — API de Standardisation des Dates
 
 > **Challenge Technique — Optimisation du Traitement de Données**
-> Projet ARTECI · ESATIC — Master 1 MBDS · 2026
+
 
 ---
 
