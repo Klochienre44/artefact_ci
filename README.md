@@ -297,8 +297,4 @@ push tag vX.Y  →  lint  →  test  →  build  →  push GHCR  →  deploy pro
 
 ---
 
-## Auteur
 
-**KONE** — Master 1 MBDS
-ESATIC — École Supérieure Africaine des Technologies de l'Information et de la Communication
-Abidjan, Côte d'Ivoire · 2026
